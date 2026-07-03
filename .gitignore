@@ -63,5 +63,9 @@ chroma_db/
 *.log
 logs/
 
+# Git worktrees
+.worktrees
+.worktrees/
+
 # Alembic temporary / local overrides
 alembic.ini.bak
