@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Skill Runtime</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --border: #d8dee4;
+        --text: #1f2328;
+        --muted: #59636e;
+        --panel: #ffffff;
+        --page: #f6f8fa;
+        --accent: #0969da;
+        --accent-dark: #0550ae;
+        --user: #ddf4ff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: var(--text);
+        background: var(--page);
+      }
+
+      .app {
+        display: grid;
+        grid-template-columns: 260px minmax(0, 1fr);
+        min-height: 100vh;
+      }
+
+      aside {
+        border-right: 1px solid var(--border);
+        padding: 18px;
+        background: var(--panel);
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 22px;
+        line-height: 1.2;
+      }
+
+      .status {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      main {
+        display: grid;
+        grid-template-rows: minmax(0, 1fr) auto;
+        min-width: 0;
+        min-height: 100vh;
+      }
+
+      #messages {
+        overflow: auto;
+        padding: 24px;
+      }
+
+      .msg {
+        width: min(860px, 100%);
+        margin: 0 auto 14px;
+        padding: 12px 14px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .msg.user {
+        background: var(--user);
+      }
+
+      .role {
+        margin-bottom: 6px;
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--muted);
+        text-transform: uppercase;
+      }
+
+      .content {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .meta {
+        min-height: 18px;
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      form {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        padding: 16px;
+        border-top: 1px solid var(--border);
+        background: var(--panel);
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 52px;
+        max-height: 180px;
+        resize: vertical;
+        font: inherit;
+        padding: 10px 12px;
+        border: 1px solid #afb8c1;
+        border-radius: 8px;
+      }
+
+      button {
+        min-width: 84px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--accent);
+        color: #fff;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: var(--accent-dark);
+      }
+
+      button:disabled {
+        cursor: wait;
+        opacity: 0.65;
+      }
+
+      @media (max-width: 720px) {
+        .app {
+          grid-template-columns: 1fr;
+        }
+
+        aside {
+          border-right: 0;
+          border-bottom: 1px solid var(--border);
+        }
+
+        main {
+          min-height: calc(100vh - 88px);
+        }
+
+        form {
+          grid-template-columns: 1fr;
+        }
+
+        button {
+          min-height: 44px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside>
+        <h1>Skill Runtime</h1>
+        <p id="conversation-status" class="status">准备创建会话</p>
+      </aside>
+      <main>
+        <section id="messages" aria-live="polite"></section>
+        <form id="chat-form">
+          <textarea id="input" name="message" placeholder="输入消息" rows="2" required></textarea>
+          <button id="send" type="submit">发送</button>
+        </form>
+      </main>
+    </div>
+    <script>
+      const messages = document.querySelector("#messages");
+      const form = document.querySelector("#chat-form");
+      const input = document.querySelector("#input");
+      const send = document.querySelector("#send");
+      const status = document.querySelector("#conversation-status");
+      const storageKey = "skill-runtime-conversation-id";
+      let conversationId = window.localStorage.getItem(storageKey);
+
+      function setStatus(text) {
+        status.textContent = text;
+      }
+
+      function appendMessage(role, text) {
+        const el = document.createElement("article");
+        el.className = `msg ${role}`;
+
+        const roleEl = document.createElement("div");
+        roleEl.className = "role";
+        roleEl.textContent = role;
+
+        const contentEl = document.createElement("div");
+        contentEl.className = "content";
+        contentEl.textContent = text;
+
+        const metaEl = document.createElement("div");
+        metaEl.className = "meta";
+
+        el.append(roleEl, contentEl, metaEl);
+        messages.appendChild(el);
+        messages.scrollTop = messages.scrollHeight;
+        return {el, contentEl, metaEl};
+      }
+
+      async function ensureConversation() {
+        if (conversationId) {
+          setStatus(`Conversation ${conversationId}`);
+          return conversationId;
+        }
+
+        setStatus("正在创建会话");
+        const response = await fetch("/chat/conversations", {method: "POST"});
+        if (!response.ok) {
+          throw new Error(`创建会话失败: ${response.status}`);
+        }
+
+        const data = await response.json();
+        conversationId = String(data.conversation_id);
+        window.localStorage.setItem(storageKey, conversationId);
+        setStatus(`Conversation ${conversationId}`);
+        return conversationId;
+      }
+
+      function parseSse(buffer, onEvent) {
+        const frames = buffer.split("\n\n");
+        const rest = frames.pop() ?? "";
+
+        for (const frame of frames) {
+          const eventName = frame
+            .split("\n")
+            .find((line) => line.startsWith("event: "))
+            ?.slice(7);
+          const dataText = frame
+            .split("\n")
+            .find((line) => line.startsWith("data: "))
+            ?.slice(6);
+
+          if (eventName && dataText) {
+            onEvent(eventName, JSON.parse(dataText));
+          }
+        }
+
+        return rest;
+      }
+
+      function updateMeta(metaEl, key, value) {
+        const current = metaEl.dataset.parts ? JSON.parse(metaEl.dataset.parts) : {};
+        current[key] = value;
+        metaEl.dataset.parts = JSON.stringify(current);
+        metaEl.textContent = Object.entries(current)
+          .map(([name, text]) => `${name}: ${text}`)
+          .join(" · ");
+      }
+
+      async function sendMessage(text, retryOnStaleConversation) {
+        const assistant = appendMessage("assistant", "");
+        let streamError = false;
+
+        try {
+          const id = await ensureConversation();
+          const response = await fetch(`/chat/conversations/${id}/messages`, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({content: text, stream: true}),
+          });
+
+          if (!response.ok || !response.body) {
+            throw new Error(`消息发送失败: ${response.status}`);
+          }
+
+          if (!(response.body instanceof ReadableStream)) {
+            throw new Error("浏览器未提供 ReadableStream 响应");
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          while (true) {
+            const {done, value} = await reader.read();
+            if (done) {
+              break;
+            }
+
+            buffer += decoder.decode(value, {stream: true});
+            buffer = parseSse(buffer, (eventName, data) => {
+              if (eventName === "routing") {
+                updateMeta(assistant.metaEl, "routing", data.reason ?? "matched");
+              }
+              if (eventName === "memory") {
+                updateMeta(assistant.metaEl, "memory", data.hit_count ?? 0);
+              }
+              if (eventName === "delta") {
+                assistant.contentEl.textContent += data.text ?? "";
+              }
+              if (eventName === "done") {
+                const usage = data.usage ?? {};
+                updateMeta(
+                  assistant.metaEl,
+                  "tokens",
+                  `${usage.prompt_tokens ?? 0}/${usage.completion_tokens ?? 0}`,
+                );
+              }
+              if (eventName === "error") {
+                updateMeta(assistant.metaEl, "error", data.detail ?? "unknown");
+                streamError = true;
+                throw new Error(data.detail ?? "stream error");
+              }
+            });
+          }
+
+          setStatus(`Conversation ${id}`);
+        } catch (error) {
+          assistant.contentEl.textContent = error instanceof Error ? error.message : String(error);
+          window.localStorage.removeItem(storageKey);
+          conversationId = null;
+          setStatus("会话需要重新创建");
+          if (streamError && retryOnStaleConversation) {
+            updateMeta(assistant.metaEl, "retry", "creating a new conversation");
+            await sendMessage(text, false);
+          }
+        }
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const text = input.value.trim();
+        if (!text) {
+          return;
+        }
+
+        input.value = "";
+        send.disabled = true;
+        appendMessage("user", text);
+
+        try {
+          await sendMessage(text, true);
+        } finally {
+          send.disabled = false;
+          input.focus();
+        }
+      });
+    </script>
+  </body>
+</html>
